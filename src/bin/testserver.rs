@@ -3,49 +3,45 @@ extern crate futures;
 extern crate hyper;
 extern crate pretty_env_logger;
 extern crate webrust;
-
+extern crate net2;
+extern crate tokio_core;
 //extern crate futures;
 //extern crate hyper;
-extern crate net2;
 //extern crate num_cpus;
 //extern crate reader_writer;
-extern crate tokio_core;
 
 use futures::Stream;
-//use hyper::{Delete, Get, Put, StatusCode};
-//use hyper::header::ContentLength;
-//use hyper::server::{Http, Service, Request, Response};
 use net2::unix::UnixTcpBuilderExt;
 use tokio_core::reactor::Core;
 use tokio_core::net::TcpListener;
-//
 use std::thread;
-//use std::path::Path;
 use std::net::SocketAddr;
 use std::sync::Arc;
-//use std::io::{Read, Write};
-
 use futures::future::FutureResult;
 use hyper::{Get, StatusCode};
 use hyper::header::ContentLength;
 use hyper::server::{Http, Service, Request, Response};
 use futures::Future;
+use std::env;
+//use hyper::{Delete, Get, Put, StatusCode};
+//use hyper::header::ContentLength;
+//use hyper::server::{Http, Service, Request, Response};
 
 use webrust::cpu_intensive_work;
-use std::env;
 
 extern crate prometheus;
 use prometheus::{Registry, Gauge, Opts, Histogram, HistogramOpts, Encoder, TextEncoder};
 
 
 #[derive(Clone)]
-struct Counted {
+struct Srv {
+    thread_id: String,
     registry: Registry,
     histogram: Histogram,
     gauge: Gauge
 }
 
-impl Service for Counted {
+impl Service for Srv {
     type Request = Request;
     type Response = Response;
     type Error = hyper::Error;
@@ -54,8 +50,9 @@ impl Service for Counted {
     fn call(&self, req: Request) -> Self::Future {
         futures::future::ok(match (req.method(), req.path()) {
             (&Get, "/data") => {
-                self.histogram.start_timer();
+                let timer = self.histogram.start_timer();
                 let b = cpu_intensive_work().into_bytes();
+                timer.observe_duration();
                 Response::new()
                 .with_header(ContentLength(b.len() as u64))
                 .with_body(b)
@@ -70,7 +67,6 @@ impl Service for Counted {
                 .with_body(buffer)
             },
             _ => {
-                println!("_____ {}", req.path());
                 Response::new()
                 .with_status(StatusCode::NotFound)
             }
@@ -78,28 +74,35 @@ impl Service for Counted {
     }
 }
 
-impl Drop for Counted {
+impl Drop for Srv {
     fn drop(&mut self) {
         self.gauge.dec();
-        println!("Disconnect");
     }
 }
 
 
-fn serve(addr: &SocketAddr, protocol: &Http, registry: &Registry, histogram: &Histogram, gauge: &Gauge) {
+fn serve(thread_id: String, addr: &SocketAddr, protocol: &Http, registry: &Registry, histogram: &Histogram) {
     let mut core = Core::new().unwrap();
     let handle = core.handle();
     let listener = net2::TcpBuilder::new_v4().unwrap()
     .reuse_port(true).unwrap()
     .bind(addr).unwrap()
     .listen(128).unwrap();
+
+    let opts = Opts::new("conn_number", "conn number help").const_label("threadId", thread_id.as_str());
+    let g = Gauge::with_opts(opts).unwrap();
+    registry.register(Box::new(g.clone())).unwrap();
+
     let listener = TcpListener::from_listener(listener, addr, &handle).unwrap();
     core.run(listener.incoming().for_each(|(socket, addr)| {
-        let s = Counted { registry: registry.clone(), histogram: histogram.clone(), gauge: gauge.clone() };
+        let s = Srv {
+            thread_id: thread_id.clone(),
+            registry: registry.clone(),
+            histogram: histogram.clone(),
+            gauge: g.clone()
+        };
         s.gauge.inc();
-        println!("xConnect");
         protocol.bind_connection(&handle, socket, addr, s);
-
         Ok(())
     }).or_else(|e| -> FutureResult<(), ()> {
         panic!("TCP listener failed: {}",e);
@@ -107,32 +110,26 @@ fn serve(addr: &SocketAddr, protocol: &Http, registry: &Registry, histogram: &Hi
     ).unwrap();
 }
 
-fn start_server(nb_instances: usize, addr: &str) {
-    let opts = HistogramOpts::new("http_request_duration_milliseconds", "request duration milliseconds help");
-    let histogram = Histogram::with_opts(opts).unwrap();
-    let gauge_opts = Opts::new("connections_count", "connections count help");
-    //.const_label("a", "1").const_label("b", "2");
-    let gauge = Gauge::with_opts(gauge_opts).unwrap();
-
-
+fn start_server(n: usize, addr: &str) {
     let reg = Registry::new();
-    reg.register(Box::new(histogram.clone())).unwrap();
-    reg.register(Box::new(gauge.clone())).unwrap();
 
+    let buckets = vec![0.001,0.002,0.005,0.007,0.010,0.020,0.030,0.040,0.050,0.1,0.2,0.3,0.5,1.0,5.0];
+    let opts = HistogramOpts::new("http_request_duration_seconds", "request duration seconds help")
+    .buckets(buckets);
+    let histogram = Histogram::with_opts(opts).unwrap();
+    reg.register(Box::new(histogram.clone())).unwrap();
 
     let addr = addr.parse().unwrap();
-
     let protocol = Arc::new(Http::new());
-    {
-        for _ in 0..nb_instances - 1 {
-            let protocol = protocol.clone();
-            let r = reg.clone();
-            let h = histogram.clone();
-            let g = gauge.clone();
-            thread::spawn(move || serve(&addr, &protocol, &r, &h, &g));
-        }
+    for i in 0..n - 1 {
+        let protocol = protocol.clone();
+        let r = reg.clone();
+        let h = histogram.clone();
+        let thread_id = format!("thread-{}", i);
+        thread::spawn(move || serve(thread_id, &addr, &protocol, &r, &h));
     }
-    serve(&addr, &protocol, &reg, &histogram, &gauge);
+    let thread_id = format!("thread-{}", n - 1);
+    serve(thread_id, &addr, &protocol, &reg, &histogram);
 }
 
 

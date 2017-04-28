@@ -7,6 +7,7 @@ extern crate serde_derive;
 struct Address {
     street: String,
     city: String,
+    count: usize,
 }
 
 
@@ -14,12 +15,15 @@ struct Address {
 // state or blocking calls.
 pub fn cpu_intensive_work() -> String {
     let mut y = "X".to_string();
-    for x in 0..100 {
+    let mut e = 10;
+    for x in 0..5000 {
         y = format!("Value: {}", x);
+        e = e + y.len();
     }
     let address = Address {
         street: "10 Downing Street".to_owned(),
         city: y.to_owned(),
+        count: e,
     };
 
     let j = serde_json::to_string(&address).unwrap();

@@ -26,11 +26,14 @@ use std::sync::Arc;
 //use std::io::{Read, Write};
 
 use futures::future::FutureResult;
+use futures::Future;
 use hyper::{Get, StatusCode};
 use hyper::header::ContentLength;
 use hyper::server::{Http, Service, Request, Response};
 
 use webrust::cpu_intensive_work;
+
+use std::env;
 
 
 #[derive(Clone, Copy)]
@@ -69,7 +72,10 @@ fn serve(addr: &SocketAddr, protocol: &Http) {
     core.run(listener.incoming().for_each(|(socket, addr)| {
         protocol.bind_connection(&handle, socket, addr, Echo);
         Ok(())
-    })).unwrap();
+    }).or_else(|e| -> FutureResult<(), ()> {
+        panic!("TCP listener failed: {}",e);
+    })
+    ).unwrap();
 }
 
 fn start_server(nb_instances: usize, addr: &str) {
@@ -87,7 +93,13 @@ fn start_server(nb_instances: usize, addr: &str) {
 
 
 fn main() {
-    start_server(4, "0.0.0.0:8080");
+    let args: Vec<_> = env::args().collect();
+    if args.len() < 2 {
+        panic!("Please state the number of threads to start");
+    }
+    let n = usize::from_str_radix(&args[1], 10).unwrap();
+
+    start_server(n, "0.0.0.0:8080");
 }
 
 

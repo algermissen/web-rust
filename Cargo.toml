@@ -12,4 +12,7 @@ serde_derive = "0.9.13"
 futures = "0.1.7"
 hyper = { git = "https://github.com/hyperium/hyper" }
 pretty_env_logger = "0.1"
+prometheus = "0.2.8"
+rand = "0.3"
+
 
