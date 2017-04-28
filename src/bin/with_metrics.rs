@@ -54,9 +54,8 @@ impl Service for Counted {
     fn call(&self, req: Request) -> Self::Future {
         futures::future::ok(match (req.method(), req.path()) {
             (&Get, "/data") => {
-                let timer = self.histogram.start_timer();
+                self.histogram.start_timer();
                 let b = cpu_intensive_work().into_bytes();
-                timer.observe_duration();
                 Response::new()
                 .with_header(ContentLength(b.len() as u64))
                 .with_body(b)
