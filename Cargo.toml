@@ -4,6 +4,7 @@ version = "0.1.0"
 authors = ["Algermissen Jan <algermissen@acm.org>"]
 
 [dependencies]
+log = "0.3"
 net2 = "0.2.27"
 tokio-core = "0.1.6"
 serde = "0.9.13"
@@ -14,5 +15,7 @@ hyper = { git = "https://github.com/hyperium/hyper" }
 pretty_env_logger = "0.1"
 prometheus = "0.2.8"
 rand = "0.3"
+tlog = { git = "https://github.com/algermissen/tlog.git" }
+tk-listen = "0.1.0"
 
 
