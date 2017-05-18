@@ -19,7 +19,7 @@ pub fn cpu_intensive_work() -> String {
     //info!("CPU_IN");
     let mut y = "X".to_string();
     let mut e = 10;
-    for x in 0..5000 {
+    for x in 0..1000 {
         y = format!("Value: {}", x);
         e = e + y.len();
     }

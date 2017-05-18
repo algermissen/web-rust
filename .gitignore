@@ -9,3 +9,4 @@ Cargo.lock
 .cargo/
 .idea/
 web-rust.iml
+tags
