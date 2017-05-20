@@ -1,15 +1,10 @@
 #![deny(warnings)]
 extern crate futures;
 extern crate hyper;
-extern crate pretty_env_logger;
 extern crate webrust;
 extern crate net2;
 extern crate tokio_core;
 extern crate tk_listen;
-//extern crate futures;
-//extern crate hyper;
-//extern crate num_cpus;
-//extern crate reader_writer;
 
 use futures::Stream;
 use net2::unix::UnixTcpBuilderExt;
@@ -23,28 +18,12 @@ use hyper::{Get, StatusCode};
 use hyper::header::ContentLength;
 use hyper::server::{Http, Service, Request, Response};
 use tokio_core::reactor::Remote;
-
 use futures::Future;
 use futures::Poll;
 use futures::future::*;
-//use std::time::Duration;
-//use tk_listen::ListenExt;
-
 use std::env;
-//use tk_http::{Status};
-//use tk_http::server::buffered::{Request, BufferedDispatcher};
-//use tk_http::server::{self, Encoder, EncoderDone, Proto, Error};
-
-//use hyper::{Delete, Get, Put, StatusCode};
-//use hyper::header::ContentLength;
-//use hyper::server::{Http, Service, Request, Response};
-//#[macro_use]
-//extern crate log;
-//extern crate tlog;
-
 
 use webrust::cpu_intensive_work;
-
 extern crate prometheus;
 use prometheus::{Registry, Gauge, Opts, Counter, Histogram, HistogramOpts, Encoder, TextEncoder};
 
@@ -111,22 +90,20 @@ impl Service for Srv {
                 let (tx, rx) = futures::sync::oneshot::channel::<Self::Response>();
                 self.remote
                     .spawn(|_| {
-
-                        let b = cpu_intensive_work().into_bytes();
-                        let res = Response::new()
-                            .with_header(ContentLength(b.len() as u64))
-                            .with_body(b);
-                        let _ = tx.send(res);
-                        Ok(())
-                    });
+                               let b = cpu_intensive_work().into_bytes();
+                               let res = Response::new()
+                                   .with_header(ContentLength(b.len() as u64))
+                                   .with_body(b);
+                               let _ = tx.send(res);
+                               Ok(())
+                           });
                 FutureResponse(rx.then(|r| {
                                            timer.observe_duration();
                                            r
                                        })
                                    .or_else(|_| -> Result<Response, Self::Error> {
-                                                Ok(Response::new()
-                                                       .with_status(StatusCode::NoContent))
-                                            })
+                    Ok(Response::new().with_status(StatusCode::InternalServerError))
+                })
                                    .boxed())
             }
             /// Standard Prometheus metrics endpoint
@@ -216,7 +193,6 @@ fn serve(remote: &Remote,
     core.run(listener
                  .incoming()
                  .for_each(|(socket, addr)| {
-            //info!("Connection");
             let s = Srv::new(remote,
                              registry,
                              &thread_id,
@@ -244,7 +220,6 @@ fn start_server(n: usize, addr: &'static str) {
         let addr = addr.parse().unwrap();
         let protocol = Arc::new(Http::new());
         for i in 0..n - 1 {
-            //info!("Starting Thread");
             let protocol = protocol.clone();
             let r = reg.clone();
             let thread_id = format!("thread-{}", i);
@@ -261,9 +236,6 @@ fn start_server(n: usize, addr: &'static str) {
 static A: &'static str = "0.0.0.0:8080";
 
 fn main() {
-    //tlog::init_lock_free_logger().unwrap();
-    //    tlog::init_mutex_logger().unwrap();
-    //info!("Starting Server");
     let args: Vec<_> = env::args().collect();
 
     if args.len() < 1 {
