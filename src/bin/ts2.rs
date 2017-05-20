@@ -6,10 +6,6 @@ extern crate webrust;
 extern crate net2;
 extern crate tokio_core;
 extern crate tk_listen;
-//extern crate futures;
-//extern crate hyper;
-//extern crate num_cpus;
-//extern crate reader_writer;
 
 use futures::Stream;
 use net2::unix::UnixTcpBuilderExt;
@@ -22,26 +18,8 @@ use futures::future::FutureResult;
 use hyper::{Get, StatusCode};
 use hyper::header::ContentLength;
 use hyper::server::{Http, Service, Request, Response};
-use tokio_core::reactor::Remote;
-
 use futures::Future;
-use futures::Poll;
-use futures::future::*;
-//use std::time::Duration;
-//use tk_listen::ListenExt;
-
 use std::env;
-//use tk_http::{Status};
-//use tk_http::server::buffered::{Request, BufferedDispatcher};
-//use tk_http::server::{self, Encoder, EncoderDone, Proto, Error};
-
-//use hyper::{Delete, Get, Put, StatusCode};
-//use hyper::header::ContentLength;
-//use hyper::server::{Http, Service, Request, Response};
-//#[macro_use]
-//extern crate log;
-//extern crate tlog;
-
 
 use webrust::cpu_intensive_work;
 
@@ -52,7 +30,6 @@ use prometheus::{Registry, Gauge, Opts, Counter, Histogram, HistogramOpts, Encod
 // in the metrics.
 #[derive(Clone)]
 struct Srv {
-    remote: Remote,
     thread_id: String,
     registry: Registry,
     request_counter: Counter,
@@ -62,8 +39,7 @@ struct Srv {
 }
 
 impl Srv {
-    fn new(rem: &Remote,
-           r: &Registry,
+    fn new(r: &Registry,
            thread_id: &String,
            cg: &Gauge,
            fcc: &Counter,
@@ -71,7 +47,6 @@ impl Srv {
            rh: &Histogram)
            -> Srv {
         let s = Srv {
-            remote: rem.clone(),
             registry: r.clone(),
             thread_id: thread_id.clone(),
             request_counter: rc.clone(),
@@ -84,70 +59,37 @@ impl Srv {
     }
 }
 
-pub struct FutureResponse(Box<Future<Item = Response, Error = hyper::Error>>);
-
-impl Future for FutureResponse {
-    type Item = Response;
-    type Error = hyper::Error;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        self.0.poll()
-    }
-}
-
 impl Service for Srv {
     type Request = Request;
     type Response = Response;
     type Error = hyper::Error;
-    type Future = FutureResponse;
+    type Future = FutureResult<Response, hyper::Error>;
 
     // Serves the dummy data created from our CPU intensive work
     // (and the metrics endpoint)
     fn call(&self, req: Request) -> Self::Future {
-        let f = match (req.method(), req.path()) {
-            (&Get, "/data") => {
-                self.request_counter.inc();
-                let timer = self.request_histogram.start_timer();
-                let (tx, rx) = futures::sync::oneshot::channel::<Self::Response>();
-                self.remote
-                    .spawn(|_| {
-
-                        let b = cpu_intensive_work().into_bytes();
-                        let res = Response::new()
-                            .with_header(ContentLength(b.len() as u64))
-                            .with_body(b);
-                        let _ = tx.send(res);
-                        Ok(())
-                    });
-                FutureResponse(rx.then(|r| {
-                                           timer.observe_duration();
-                                           r
-                                       })
-                                   .or_else(|_| -> Result<Response, Self::Error> {
-                                                Ok(Response::new()
-                                                       .with_status(StatusCode::NoContent))
-                                            })
-                                   .boxed())
-            }
-            /// Standard Prometheus metrics endpoint
-            (&Get, "/metrics") => {
-                let encoder = TextEncoder::new();
-                let metric_familys = self.registry.gather();
-                let mut buffer = vec![];
-                encoder.encode(&metric_familys, &mut buffer).unwrap();
-                let res = Response::new().with_body(buffer);
-                FutureResponse(futures::finished(res).boxed())
-            }
-
-            _ => {
-                let res = Response::new().with_status(StatusCode::NotFound);
-                FutureResponse(futures::finished(res).boxed())
-            }
-        };
-        f
+        futures::future::ok(match (req.method(), req.path()) {
+                                (&Get, "/data") => {
+                                    self.request_counter.inc();
+                                    let timer = self.request_histogram.start_timer();
+                                    let b = cpu_intensive_work().into_bytes();
+                                    timer.observe_duration();
+                                    Response::new()
+                                        .with_header(ContentLength(b.len() as u64))
+                                        .with_body(b)
+                                }
+                                // Standard Prometheus metrics endpoint
+                                (&Get, "/metrics") => {
+                                    let encoder = TextEncoder::new();
+                                    let metric_familys = self.registry.gather();
+                                    let mut buffer = vec![];
+                                    encoder.encode(&metric_familys, &mut buffer).unwrap();
+                                    Response::new().with_body(buffer)
+                                }
+                                _ => Response::new().with_status(StatusCode::NotFound),
+                            })
     }
 }
-
 
 impl Drop for Srv {
     fn drop(&mut self) {
@@ -157,11 +99,7 @@ impl Drop for Srv {
 }
 
 
-fn serve(remote: &Remote,
-         thread_id: String,
-         addr: &SocketAddr,
-         protocol: &Http,
-         registry: &Registry) {
+fn serve(thread_id: String, addr: &SocketAddr, protocol: &Http, registry: &Registry) {
     let mut core = Core::new().unwrap();
     let handle = core.handle();
 
@@ -171,7 +109,7 @@ fn serve(remote: &Remote,
         .unwrap()
         .bind(addr)
         .unwrap()
-        .listen(4)
+        .listen(128)
         .unwrap();
 
     // =================== START METRICS SETUP =====================
@@ -201,7 +139,6 @@ fn serve(remote: &Remote,
     let rc = Counter::with_opts(rc_opts).unwrap();
     registry.register(Box::new(rc.clone())).unwrap();
 
-
     let buckets = vec![0.001, 0.002, 0.005, 0.007, 0.010, 0.020, 0.030, 0.040, 0.050, 0.1, 0.2,
                        0.3, 0.5, 1.0, 5.0];
     let h_opts = HistogramOpts::new("http_request_duration_seconds",
@@ -216,9 +153,7 @@ fn serve(remote: &Remote,
     core.run(listener
                  .incoming()
                  .for_each(|(socket, addr)| {
-            //info!("Connection");
-            let s = Srv::new(remote,
-                             registry,
+            let s = Srv::new(registry,
                              &thread_id,
                              &active_conn_gauge,
                              &finished_conn_counter,
@@ -234,43 +169,27 @@ fn serve(remote: &Remote,
         .unwrap();
 }
 
-fn start_server(n: usize, addr: &'static str) {
-
-    let mut worker_core = Core::new().unwrap();
-    let remote = worker_core.remote();
-
-    thread::spawn(move || {
-        let reg = Registry::new();
-        let addr = addr.parse().unwrap();
-        let protocol = Arc::new(Http::new());
-        for i in 0..n - 1 {
-            //info!("Starting Thread");
-            let protocol = protocol.clone();
-            let r = reg.clone();
-            let thread_id = format!("thread-{}", i);
-            let remote2 = remote.clone();
-            thread::spawn(move || serve(&remote2, thread_id, &addr, &protocol, &r));
-        }
-        let thread_id = format!("thread-{}", n - 1);
-        serve(&remote, thread_id, &addr, &protocol, &reg);
-    });
-
-    worker_core.run(empty::<(), ()>()).unwrap()
+fn start_server(n: usize, addr: &str) {
+    let reg = Registry::new();
+    let addr = addr.parse().unwrap();
+    let protocol = Arc::new(Http::new());
+    for i in 0..n - 1 {
+        let protocol = protocol.clone();
+        let r = reg.clone();
+        let thread_id = format!("thread-{}", i);
+        thread::spawn(move || serve(thread_id, &addr, &protocol, &r));
+    }
+    let thread_id = format!("thread-{}", n - 1);
+    serve(thread_id, &addr, &protocol, &reg);
 }
 
-static A: &'static str = "0.0.0.0:8080";
 
 fn main() {
-    //tlog::init_lock_free_logger().unwrap();
-    //    tlog::init_mutex_logger().unwrap();
-    //info!("Starting Server");
     let args: Vec<_> = env::args().collect();
-
-    if args.len() < 1 {
+    if args.len() < 2 {
         panic!("Please state the number of threads to start");
     }
-
     let n = usize::from_str_radix(&args[1], 10).unwrap();
 
-    start_server(n, A);
+    start_server(n, "0.0.0.0:8080");
 }
